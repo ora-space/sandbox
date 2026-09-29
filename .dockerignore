@@ -1,0 +1,11 @@
+.git
+.github
+bin
+dist
+*.tar
+*.tar.gz
+coverage.out
+docs
+deploy
+examples
+service

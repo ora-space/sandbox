@@ -1,0 +1,10 @@
+/bin/
+/dist/
+*.tar
+*.tar.gz
+coverage.out
+journal.json
+journal.json.tmp
+.DS_Store
+.vscode/
+.idea/
