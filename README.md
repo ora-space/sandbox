@@ -58,6 +58,102 @@ make image IMAGE=ora-sandbox-runtime:dev
 
 完整步骤见 [部署说明](docs/deployment.md)，完整参数见 [配置说明](docs/configuration.md)。
 
+## 部署
+
+下面给出单机控制侧加 Agent Substrate 集群的最短部署路径。生产部署前先阅读 [详细配置](docs/configuration.md) 和 [生产差距](docs/deployment.md#10-生产差距)。
+
+### 1. 获取代码并验证
+
+~~~bash
+git clone https://github.com/ora-space/sandbox.git
+cd sandbox
+
+make test
+make test-race
+make vet
+make build
+~~~
+
+Go 依赖已提交在 `vendor/`，因此 Go 编译阶段可以不访问模块代理。生成的二进制位于 `bin/`。
+
+### 2. 构建并推送 runtime 镜像
+
+~~~bash
+IMAGE=registry.example.com/ora/sandbox-runtime:2026.09.29
+
+make image IMAGE="$IMAGE"
+docker push "$IMAGE"
+docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE"
+~~~
+
+将输出的不可变 digest 写入 `deploy/ora-actor-template.json` 的 `containers[0].image`。同时按目标集群修改：
+
+- `metadata.atespace` 和 `metadata.name`；
+- `workerSelector.matchLabels`；
+- `snapshotsConfig.storageLocation`；
+- `sandboxConfig.configName`；
+- CPU 和内存 limits。
+
+创建 ActorTemplate：
+
+~~~bash
+kubectl-ate \
+  --kubeconfig /opt/substrate-poc/config/kubeconfig \
+  --context kind-substrate-poc \
+  create actor-template -f deploy/ora-actor-template.json
+~~~
+
+ActorTemplate 不可更新。镜像、资源或 snapshot 配置变化时，应创建新版本模板，并将生命周期服务切换到新模板名。
+
+### 3. 安装生命周期服务和 WebSocket router
+
+先编辑 `deploy/ora-sandbox-service.service`，确认以下参数与实际环境一致：
+
+- `-atespace`、`-template`、`-controller-id`；
+- `-kubectl-ate`、`-kubeconfig`、`-context`；
+- `-internal-router`；
+- `-lifecycle-addr`、`-router-addr` 和 `-state`。
+
+未显式写入 unit 的参数使用 [配置说明](docs/configuration.md#生命周期服务启动参数) 中的默认值。
+
+~~~bash
+sudo install -d -m 0755 /opt/substrate-poc/bin
+sudo install -m 0755 bin/ora-sandbox-service /opt/substrate-poc/bin/
+sudo install -m 0755 bin/ora-controller-demo /opt/substrate-poc/bin/
+sudo install -d -m 0700 /opt/substrate-poc/ora-sandbox-service/state
+sudo install -m 0644 deploy/ora-sandbox-service.service /etc/systemd/system/
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now ora-sandbox-service
+~~~
+
+### 4. 配置 Ora Controller
+
+~~~yaml
+effects_url: http://127.0.0.1:18002
+router_url: ws://127.0.0.1:18001/ora-node/v1
+atespace: ate-coding-poc
+controller_id: ora-cloud-controller
+~~~
+
+四个值必须与 systemd unit 和 ActorTemplate 一致。跨主机时，通过带身份认证和 TLS 的入口提供 `https://` 与 `wss://` 地址。只向 Controller 暴露 `18001/18002`；`18000` 是内部 atenet ingress。
+
+### 5. 部署后检查
+
+~~~bash
+systemctl status ora-sandbox-service
+journalctl -u ora-sandbox-service -n 100 --no-pager
+ss -lntp | grep -E '18000|18001|18002'
+
+# 使用合法但不存在的 effect ID，预期返回 404 not_found
+curl -i http://127.0.0.1:18002/effects/00000000-0000-4000-8000-000000000001
+
+# 未进行 WebSocket Upgrade，预期返回 426
+curl -i http://127.0.0.1:18001/ora-node/v1
+~~~
+
+创建 Actor、Node 握手、terminate、DATA Tag 恢复和数据删除的完整演示见 [部署与镜像打包](docs/deployment.md#7-最小生命周期演示)。Substrate Actor 与 Tag 的检查命令见同文档的[运行状态与日志](docs/deployment.md#8-运行状态与日志)。
+
 ## 外部接口
 
 ~~~text
